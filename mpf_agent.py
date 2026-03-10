@@ -542,17 +542,20 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     vol_note = f"annualised volatility of {new_vol:.1f}%" if new_vol else "controlled volatility"
 
     yr3_new = yr3.get("new_cumulative_pct", "")
-    yr3_str = f", projecting a cumulative return of ~{yr3_new}% over 3 years" if yr3_new else ""
+    yr3_str = (
+        f"~{new_return:.1f}% per annum (~{yr3_new}% cumulative over 3 years)"
+        if yr3_new else f"~{new_return:.1f}% per annum"
+    )
+    target_range = f"{_INVESTOR_TARGET_RETURN}–{_INVESTOR_TARGET_RETURN + 2:.0f}%"
 
     rationale_paragraph = (
-        f"This rebalanced allocation targets an expected annual return of "
-        f"~{new_return:.1f}% ({imp_sign}% vs current {curr_ret:.1f}%){yr3_str}, "
-        f"pushing toward the {_INVESTOR_TARGET_RETURN}% overall portfolio target. "
-        f"The optimiser achieves {sharpe_note} at {vol_note}, "
-        f"distributing capital across {n_funds} funds and {n_classes} asset classes "
-        f"for superior diversification. "
+        f"This rebalanced allocation drives an expected return of {yr3_str}, "
+        f"projecting toward the {target_range} target. "
+        f"We achieve superior diversification across {n_classes} asset classes "
+        f"and an improvement in {sharpe_note}, "
+        f"while {vol_note} ensures downside risk remains within tolerance. "
         f"Bond exposure of {bond_pct:.1f}% ({', '.join(bond_funds) if bond_funds else 'none'}) "
-        f"provides downside protection and cushions against equity market drawdowns."
+        f"provides additional downside protection against equity market drawdowns."
     )
 
     # ── Alert logic ─────────────────────────────────────────────────────────
@@ -654,36 +657,63 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
         f"{legend.rstrip()}\n"
     )
 
-    # Format new allocation table
-    alloc_lines = "\n".join(
-        f"  • {fund}: {pct}%" for fund, pct in recommended.items()
+    # ── Optimisation stats header ─────────────────────────────────────────────
+    solver_ok  = "✅ Converged successfully"
+    gap        = round(portfolio_ytd - target_return, 1)
+    gap_str    = f"{gap:+.1f}%"
+    stats_section = (
+        f"Optimisation stats:\n"
+        f"  * Solver: {solver_ok}\n"
+        f"  * Current portfolio return: {portfolio_ytd:.1f}% | Target: {target_return:.1f}% | Gap: {gap_str}\n"
+        f"  * New optimised return: {new_return:.1f}% | Volatility: {new_vol:.2f}% | Sharpe: {new_sharpe:.3f}\n"
     )
 
-    # Format optimization rationale — single portfolio-level paragraph
-    rationale_section = (
-        f"\n─── Optimization Rationale ────────────────────────────\n"
-        f"  {rationale_paragraph}\n"
-    )
+    # ── Build current-allocation lookup for "was X%" context ─────────────────
+    curr_alloc_map = {f["fund"]: f["allocation_pct"] for f in _PORTFOLIO}
+    curr_return_map = {f["fund"]: f["return_1yr_pct"] for f in _PORTFOLIO}
 
-    # Format 3yr / 5yr forecasted return comparison table
+    # ── Recommended reallocation highlights (↑ ↓ arrows, was X% context) ─────
+    highlight_lines = []
+    for fund, new_pct in recommended.items():
+        old_pct = curr_alloc_map.get(fund, 0.0)
+        arrow   = "↑" if new_pct > old_pct else "↓" if new_pct < old_pct else "→"
+        ret1yr  = curr_return_map.get(fund)
+        ret_str = f" — {ret1yr:+.1f}% 1yr return" if ret1yr is not None else ""
+        highlight_lines.append(
+            f"  * {arrow} {fund}: {new_pct:.1f}% (was {old_pct:.1f}%){ret_str}"
+        )
+    highlights_section = "Recommended reallocation highlights:\n" + "\n".join(highlight_lines)
+
+    # ── Optimization rationale ────────────────────────────────────────────────
+    rationale_section = f"Optimization Rationale: {rationale_paragraph}"
+
+    # ── 5-year forecast bullet summary ───────────────────────────────────────
     if forecast:
-        ann  = forecast.get("annual_return", {})
-        yr3  = forecast.get("3_year", {})
-        yr5  = forecast.get("5_year", {})
-        imp  = ann.get("improvement_pct", 0)
-        imp_sign = f"+{imp}" if imp >= 0 else str(imp)
-        forecast_section = f"""
-─── Forecasted Return Comparison (per HKD 100 invested) ──
-                         Current Portfolio    New Portfolio    Difference
-  Annual return        : {ann.get('current_pct', 'N/A'):>8}%           {ann.get('new_pct', 'N/A'):>8}%       {imp_sign}%
-  3-Year cumulative    : {yr3.get('current_cumulative_pct', 'N/A'):>8}%           {yr3.get('new_cumulative_pct', 'N/A'):>8}%
-  3-Year value (HKD)   : {yr3.get('current_value_hkd', 'N/A'):>10}        {yr3.get('new_value_hkd', 'N/A'):>10}       +{yr3.get('gain_vs_current_hkd', 'N/A')}
-  5-Year cumulative    : {yr5.get('current_cumulative_pct', 'N/A'):>8}%           {yr5.get('new_cumulative_pct', 'N/A'):>8}%
-  5-Year value (HKD)   : {yr5.get('current_value_hkd', 'N/A'):>10}        {yr5.get('new_value_hkd', 'N/A'):>10}       +{yr5.get('gain_vs_current_hkd', 'N/A')}
-
-  * Forecast assumes constant annual return equal to trailing 1-year
-    performance. Actual returns will vary with market conditions.
-"""
+        yr5      = forecast.get("5_year", {})
+        curr_fv5 = yr5.get("current_value_hkd", "N/A")
+        new_fv5  = yr5.get("new_value_hkd", "N/A")
+        gain5    = yr5.get("gain_vs_current_hkd", "N/A")
+        yr3_     = forecast.get("3_year", {})
+        curr_fv3 = yr3_.get("current_value_hkd", "N/A")
+        new_fv3  = yr3_.get("new_value_hkd", "N/A")
+        gain3    = yr3_.get("gain_vs_current_hkd", "N/A")
+        ann_     = forecast.get("annual_return", {})
+        imp_val  = ann_.get("improvement_pct", 0)
+        imp_str  = f"+{imp_val}" if imp_val >= 0 else str(imp_val)
+        forecast_section = (
+            f"5-year forecast per HKD 100 invested:\n"
+            f"  * Current portfolio → HKD {curr_fv5} (annual: {portfolio_ytd:.1f}%)\n"
+            f"  * New portfolio     → HKD {new_fv5} ({imp_str}% annual improvement)\n"
+            f"  * Gain vs current   → +HKD {gain5}\n"
+            f"\n"
+            f"3-year forecast per HKD 100 invested:\n"
+            f"  * Current portfolio → HKD {curr_fv3}\n"
+            f"  * New portfolio     → HKD {new_fv3}\n"
+            f"  * Gain vs current   → +HKD {gain3}\n"
+            f"\n"
+            f"  * Forecast assumes constant annual return equal to trailing 1-year\n"
+            f"    performance. Actual returns will vary with market conditions.\n"
+        )
     else:
         forecast_section = ""
 
@@ -702,14 +732,14 @@ Here is your weekly MPF portfolio review.
   Your target return   : {target_return:.1f}%
   vs Benchmark         : {portfolio_ytd - benchmark_ytd:+.1f}%
   vs Target            : {portfolio_ytd - target_return:+.1f}%
-{alert_lines}{current_portfolio_section}
-─── Recommended Reallocation ──────────────────────────
-{alloc_lines}
-{rationale_section}{forecast_section}
-This optimised allocation is designed to meet your {target_return:.1f}% overall
-portfolio target with minimum risk, maintaining bond exposure for downside
-protection and diversification across multiple asset classes.
+{alert_lines}
+{stats_section}
+{current_portfolio_section}
+{highlights_section}
 
+{rationale_section}
+
+{forecast_section}
 ─── Next Steps ────────────────────────────────────────
 {"1. Review the reallocation above PROMPTLY." if action_required else "1. Review the reallocation above at your convenience."}
 2. Log in to your MPF trustee portal to submit the switch instruction.
