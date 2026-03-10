@@ -71,16 +71,20 @@ get_portfolio_  get_fund_universe   get_benchmark_state
                     ▼                      ▼
         optimize_allocation()     build_weekly_email()
         (Markowitz MVO,           ├─ alert logic (4 severity levels)
-         SLSQP solver,            ├─ current portfolio holdings table
-         forecast calc)           │    (loop over _PORTFOLIO,
+         SLSQP solver,            ├─ optimisation stats header
+         forecast calc)           │    (solver status, return/target/gap,
+                    │             │     new return/vol/sharpe)
+                    │             ├─ current portfolio holdings table
+                    │             │    (loop over _PORTFOLIO,
                     │             │     bar = "█" * int(alloc/2))
                     │             ├─ ASCII round chart
                     │             │    (CHART_WIDTH=60, SYMBOLS list,
                     │             │     proportional cells per fund)
-                    │             ├─ allocation table
+                    │             ├─ reallocation highlights
+                    │             │    (↑/↓ arrows, was X%, 1yr return)
                     │             ├─ optimization rationale paragraph
                     │             │    (auto-generated from fund data)
-                    │             ├─ 3yr/5yr forecast comparison table
+                    │             ├─ 5yr/3yr forecast bullet summaries
                     └────────────►└─ next steps
                     passes:
                     expected_annual_return_pct,
@@ -104,7 +108,7 @@ get_portfolio_  get_fund_universe   get_benchmark_state
 
 ### Test script (`test_email.py`)
 
-Bypasses the Claude API entirely for local testing:
+Bypasses the Claude API entirely for local testing. Outputs **only** the complete formatted email body to stdout — no debug lines, no separators.
 
 ```
 test_email.py
@@ -123,6 +127,9 @@ test_email.py
             ├─ portfolio_volatility_pct   ← from opt_result
             ├─ sharpe_ratio               ← from opt_result
             └─ forecast_comparison        ← from opt_result
+                    │
+                    ▼
+            print(email_result["email"])   # clean output only
 ```
 
 ### Data flow
@@ -227,13 +234,13 @@ bond_pct         → sum of weights for bond funds
 
 Example output:
 ```
-This rebalanced allocation targets an expected annual return of ~20.0%
-(+5.3% vs current 14.7%), projecting a cumulative return of ~72.8% over
-3 years, pushing toward the 20.0% overall portfolio target. The optimiser
-achieves a Sharpe ratio of 1.78 at annualised volatility of 9.0%,
-distributing capital across 8 funds and 8 asset classes for superior
-diversification. Bond exposure of 9.7% (Global Bond Fund) provides
-downside protection and cushions against equity market drawdowns.
+This rebalanced allocation drives an expected return of ~20.0% per annum
+(~72.8% cumulative over 3 years), projecting toward the 20.0–22% target.
+We achieve superior diversification across 8 asset classes and an
+improvement in a Sharpe ratio of 1.78, while annualised volatility of
+9.0% ensures downside risk remains within tolerance. Bond exposure of
+9.7% (Global Bond Fund) provides additional downside protection against
+equity market drawdowns.
 ```
 
 ### `build_weekly_email` — full email structure
@@ -250,11 +257,16 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
    ⚠️  Target Return Not Met — portfolio < 20% target only
    🚨  URGENT                — portfolio below both benchmark and target
 
-3. Current Portfolio Holdings  ← NEW
+3. Optimisation Stats
+   Solver: ✅ Converged successfully
+   Current portfolio return: XX.X% | Target: XX.X% | Gap: ±X.X%
+   New optimised return: XX.X% | Volatility: X.XX% | Sharpe: X.XXX
+
+4. Current Portfolio Holdings
    Fund name (42 chars)  Alloc%  1yr Rtn%  Risk level  █ bar (each █ ≈ 2%)
    (one row per fund, all 8 funds from _PORTFOLIO)
 
-4. Current Allocation — Round Chart  ← NEW
+5. Current Allocation — Round Chart
    ┌────────────────────────────────────────────────────────────┐
    │▓▓▓▓▓▓▓▓▓░░░░░░░░▒▒▒▒▒▒▒▒■■■■■■■□□□□□□▪▪▪▪▪▪▫▫▫▫◆◆◆◆│
    └────────────────────────────────────────────────────────────┘
@@ -262,22 +274,26 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
    ░ Fund Name 2   XX.X%
    ...  (legend for all 8 funds)
 
-5. Recommended Reallocation
-   • Fund Name: XX.X%    (per fund, 2%–40% bounds, ≥5% bond)
+6. Recommended Reallocation Highlights
+   * ↑/↓ Fund Name: XX.X% (was XX.X%) — ±XX.X% 1yr return
+   (one bullet per fund, ↑=increase ↓=decrease →=unchanged)
 
-6. Optimization Rationale  ← auto-generated Python paragraph
-   "This rebalanced allocation targets an expected annual return of
-    ~XX.X% (+X.X% vs current XX.X%), projecting ~XX.X% over 3 years..."
+7. Optimization Rationale  ← auto-generated Python paragraph
+   "This rebalanced allocation drives an expected return of ~XX.X%
+    per annum (~XX.X% cumulative over 3 years), projecting toward
+    the XX.X–XX% target..."
 
-7. Forecasted Return Comparison (per HKD 100 invested)
-                       Current Portfolio   New Portfolio   Difference
-   Annual return     :     XX.X%              XX.X%         +X.X%
-   3-Year cumulative :     XX.X%              XX.X%
-   3-Year value (HKD):     XXX.XX             XXX.XX        +XX.XX
-   5-Year cumulative :     XX.X%              XX.X%
-   5-Year value (HKD):     XXX.XX             XXX.XX        +XX.XX
+8. Forecast Summaries (per HKD 100 invested)
+   5-year forecast:
+     * Current portfolio → HKD XXX.XX (annual: XX.X%)
+     * New portfolio     → HKD XXX.XX (+X.XX% annual improvement)
+     * Gain vs current   → +HKD XX.XX
+   3-year forecast:
+     * Current portfolio → HKD XXX.XX
+     * New portfolio     → HKD XXX.XX
+     * Gain vs current   → +HKD XX.XX
 
-8. Next Steps
+9. Next Steps
    1. Review reallocation [PROMPTLY if action required]
    2. Log in to MPF trustee portal to submit switch
    3. Allow 3–5 business days for switch to take effect
