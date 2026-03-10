@@ -74,7 +74,8 @@ TOOLS = [
             "Given a target annual return and a list of candidate fund codes, "
             "returns an optimised allocation (%) across those funds using "
             "mean-variance optimisation. Must use at least 4 funds and "
-            "multiple asset classes. Includes a bond fund if feasible."
+            "multiple asset classes. Includes a bond fund if feasible. "
+            "Each fund is capped at 20% to ensure broad diversification."
         ),
         "input_schema": {
             "type": "object",
@@ -389,8 +390,8 @@ def tool_optimize_allocation(tool_input: dict) -> str:
             "fun": lambda w, idx=bond_idx: sum(w[i] for i in idx) - 0.05,
         })
 
-    # ── Bounds: 2 %–40 % per fund (ensures minimum diversification) ─────────
-    bounds = [(0.02, 0.40)] * n
+    # ── Bounds: 2 %–20 % per fund (max 20 % cap per new recommendation rule) ──
+    bounds = [(0.02, 0.20)] * n
 
     # ── Solve (SLSQP) ────────────────────────────────────────────────────────
     w0 = np.ones(n) / n
@@ -488,7 +489,7 @@ def tool_optimize_allocation(tool_input: dict) -> str:
         "note": (
             "Volatilities estimated from risk ratings. "
             "Correlations estimated from asset classes. "
-            "Minimum 2 % per fund, maximum 40 % per fund."
+            "Minimum 2 % per fund, maximum 20 % per fund."
         ),
     })
 
@@ -623,8 +624,8 @@ Here is your weekly MPF portfolio review.
 {alloc_lines}
 {rationale_section}{forecast_section}
 This optimised allocation is designed to meet your {target_return:.1f}% target
-with minimum portfolio risk, maintaining bond exposure for downside protection
-and diversification across multiple asset classes.
+with minimum portfolio risk. Each fund is capped at 20% to ensure broad
+diversification, with bond exposure maintained for downside protection.
 
 ─── Next Steps ────────────────────────────────────────
 {"1. Review the reallocation above PROMPTLY." if action_required else "1. Review the reallocation above at your convenience."}
