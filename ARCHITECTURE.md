@@ -71,8 +71,14 @@ get_portfolio_  get_fund_universe   get_benchmark_state
                     ▼                      ▼
         optimize_allocation()     build_weekly_email()
         (Markowitz MVO,           ├─ alert logic (4 severity levels)
-         SLSQP solver,            ├─ allocation table
-         forecast calc)           ├─ optimization rationale paragraph
+         SLSQP solver,            ├─ current portfolio holdings table
+         forecast calc)           │    (loop over _PORTFOLIO,
+                    │             │     bar = "█" * int(alloc/2))
+                    │             ├─ ASCII round chart
+                    │             │    (CHART_WIDTH=60, SYMBOLS list,
+                    │             │     proportional cells per fund)
+                    │             ├─ allocation table
+                    │             ├─ optimization rationale paragraph
                     │             │    (auto-generated from fund data)
                     │             ├─ 3yr/5yr forecast comparison table
                     └────────────►└─ next steps
@@ -168,7 +174,38 @@ _FUND_UNIVERSE (8 funds, static)
 | `get_fund_universe` | *(none)* | 8 fund codes, asset class, expected return, risk, is_bond |
 | `get_benchmark_state` | *(none)* | HSI level and YTD return |
 | `optimize_allocation` | `target_return`, `fund_codes?` | Allocation %, expected return, volatility, Sharpe, `forecast_comparison` |
-| `build_weekly_email` | `portfolio_ytd`, `benchmark_ytd`, `target_return`, `beats_benchmark`, `meets_target`, `recommended_allocation`, `expected_annual_return_pct`, `portfolio_volatility_pct`, `sharpe_ratio`, `forecast_comparison` | Formatted email string + alert metadata |
+| `build_weekly_email` | `portfolio_ytd`, `benchmark_ytd`, `target_return`, `beats_benchmark`, `meets_target`, `recommended_allocation`, `expected_annual_return_pct`, `portfolio_volatility_pct`, `sharpe_ratio`, `forecast_comparison` (10 required fields) | Formatted email string + alert metadata |
+
+### `build_weekly_email` — Current Portfolio Holdings table
+
+The holdings table is built by looping over `_PORTFOLIO` and rendering one row per fund:
+
+```python
+for f in _PORTFOLIO:
+    bar = "█" * int(f["allocation_pct"] / 2)   # 1 block ≈ 2%
+    # columns: fund name (42 chars), alloc %, 1yr return %, risk level, bar
+```
+
+Each row shows: fund name, allocation %, 1yr return %, risk level, and an inline bar chart. The bar length is `int(allocation_pct / 2)` so each `█` represents approximately 2% allocation.
+
+### `build_weekly_email` — ASCII Round Chart
+
+The round chart is a proportional bar spanning exactly 60 characters (`CHART_WIDTH = 60`), with 8 distinct block symbols assigned to each fund:
+
+```python
+CHART_WIDTH = 60
+SYMBOLS = ["▓", "░", "▒", "■", "□", "▪", "▫", "◆"]
+
+for idx, f in enumerate(_PORTFOLIO):
+    sym   = SYMBOLS[idx % len(SYMBOLS)]
+    cells = max(1, round(f["allocation_pct"] / 100 * CHART_WIDTH))
+    chart_bar += sym * cells
+    legend    += f"  {sym} {f['fund']:<42} {f['allocation_pct']:>5.1f}%\n"
+
+chart_bar = chart_bar[:CHART_WIDTH].ljust(CHART_WIDTH)   # trim/pad to exact width
+```
+
+A legend below the bar shows each symbol with its fund name and allocation percentage.
 
 ### `build_weekly_email` — Optimization Rationale generation
 
@@ -213,14 +250,26 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
    ⚠️  Target Return Not Met — portfolio < 20% target only
    🚨  URGENT                — portfolio below both benchmark and target
 
-3. Recommended Reallocation
+3. Current Portfolio Holdings  ← NEW
+   Fund name (42 chars)  Alloc%  1yr Rtn%  Risk level  █ bar (each █ ≈ 2%)
+   (one row per fund, all 8 funds from _PORTFOLIO)
+
+4. Current Allocation — Round Chart  ← NEW
+   ┌────────────────────────────────────────────────────────────┐
+   │▓▓▓▓▓▓▓▓▓░░░░░░░░▒▒▒▒▒▒▒▒■■■■■■■□□□□□□▪▪▪▪▪▪▫▫▫▫◆◆◆◆│
+   └────────────────────────────────────────────────────────────┘
+   ▓ Fund Name 1   XX.X%
+   ░ Fund Name 2   XX.X%
+   ...  (legend for all 8 funds)
+
+5. Recommended Reallocation
    • Fund Name: XX.X%    (per fund, 2%–40% bounds, ≥5% bond)
 
-4. Optimization Rationale  ← auto-generated Python paragraph
+6. Optimization Rationale  ← auto-generated Python paragraph
    "This rebalanced allocation targets an expected annual return of
     ~XX.X% (+X.X% vs current XX.X%), projecting ~XX.X% over 3 years..."
 
-5. Forecasted Return Comparison (per HKD 100 invested)
+7. Forecasted Return Comparison (per HKD 100 invested)
                        Current Portfolio   New Portfolio   Difference
    Annual return     :     XX.X%              XX.X%         +X.X%
    3-Year cumulative :     XX.X%              XX.X%
@@ -228,7 +277,7 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
    5-Year cumulative :     XX.X%              XX.X%
    5-Year value (HKD):     XXX.XX             XXX.XX        +XX.XX
 
-6. Next Steps
+8. Next Steps
    1. Review reallocation [PROMPTLY if action required]
    2. Log in to MPF trustee portal to submit switch
    3. Allow 3–5 business days for switch to take effect
@@ -248,6 +297,8 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
 | Per-fund bounds | `(0.02, 0.40)` | 2%–40% weight range per fund |
 | Bond floor | `0.05` | Minimum 5% in bond fund(s) |
 | Risk-free rate | `4.0%` | HK approx., used for Sharpe ratio |
+| `CHART_WIDTH` | `60` | Total character width of the ASCII round chart |
+| `SYMBOLS` | `["▓","░","▒","■","□","▪","▫","◆"]` | 8 distinct block symbols for round chart |
 
 ### Annualised return formula
 
