@@ -139,6 +139,15 @@ TOOLS = [
                         "recent performance context, and asset-class contribution."
                     ),
                 },
+                "forecast_comparison": {
+                    "type": "object",
+                    "description": (
+                        "Forecasted return comparison between current and new portfolio. "
+                        "Pass the forecast_comparison object directly from optimize_allocation output. "
+                        "Contains annual_return, 3_year, and 5_year sub-objects with "
+                        "cumulative return (%) and HKD future value for both current and new portfolio."
+                    ),
+                },
             },
             "required": [
                 "portfolio_ytd",
@@ -148,6 +157,7 @@ TOOLS = [
                 "meets_target",
                 "recommended_allocation",
                 "optimization_rationale",
+                "forecast_comparison",
             ],
         },
     },
@@ -421,6 +431,49 @@ def tool_optimize_allocation(tool_input: dict) -> str:
     curr_returns = np.array([f["return_1yr_pct"] for f in _PORTFOLIO])
     current_return = round(float(curr_alloc @ curr_returns), 2)
 
+    # ── Forecasted cumulative returns (compound growth, HKD $100 base) ───────
+    # Uses expected annual return as a constant forward-looking proxy.
+    # new_annual  = expected_return (%) from optimised weights
+    # curr_annual = current_return  (%) from current holdings
+    def _compound(annual_pct: float, years: int) -> float:
+        """Cumulative return (%) after `years` at `annual_pct`% p.a."""
+        return round((((1 + annual_pct / 100) ** years) - 1) * 100, 1)
+
+    def _future_value(annual_pct: float, years: int, base: float = 100.0) -> float:
+        """Future value of `base` HKD after `years` at `annual_pct`% p.a."""
+        return round(base * (1 + annual_pct / 100) ** years, 2)
+
+    forecast = {
+        "annual_return": {
+            "current_pct":      current_return,
+            "new_pct":          expected_return,
+            "improvement_pct":  round(expected_return - current_return, 2),
+        },
+        "3_year": {
+            "current_cumulative_pct":  _compound(current_return, 3),
+            "new_cumulative_pct":      _compound(expected_return, 3),
+            "current_value_hkd":       _future_value(current_return, 3),
+            "new_value_hkd":           _future_value(expected_return, 3),
+            "gain_vs_current_hkd":     round(
+                _future_value(expected_return, 3) - _future_value(current_return, 3), 2
+            ),
+        },
+        "5_year": {
+            "current_cumulative_pct":  _compound(current_return, 5),
+            "new_cumulative_pct":      _compound(expected_return, 5),
+            "current_value_hkd":       _future_value(current_return, 5),
+            "new_value_hkd":           _future_value(expected_return, 5),
+            "gain_vs_current_hkd":     round(
+                _future_value(expected_return, 5) - _future_value(current_return, 5), 2
+            ),
+        },
+        "note": (
+            "Forecasts assume constant annual return equal to current 1-year "
+            "trailing performance. Actual returns will vary. "
+            "Base: HKD 100 invested today."
+        ),
+    }
+
     return json.dumps({
         "optimisation_method": "Mean-Variance (Markowitz, SLSQP)",
         "solver_success": result.success,
@@ -431,6 +484,7 @@ def tool_optimize_allocation(tool_input: dict) -> str:
         "sharpe_ratio": sharpe,
         "current_portfolio_return_pct": current_return,
         "return_improvement_pct": round(expected_return - current_return, 2),
+        "forecast_comparison": forecast,
         "note": (
             "Volatilities estimated from risk ratings. "
             "Correlations estimated from asset classes. "
@@ -447,6 +501,7 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     meets_target: bool = tool_input["meets_target"]
     recommended: dict = tool_input["recommended_allocation"]
     rationale: dict = tool_input.get("optimization_rationale", {})
+    forecast: dict = tool_input.get("forecast_comparison", {})
 
     # ── Alert logic ─────────────────────────────────────────────────────────
     below_benchmark = not beats_benchmark          # portfolio < HSI
@@ -526,6 +581,28 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     else:
         rationale_section = ""
 
+    # Format 3yr / 5yr forecasted return comparison table
+    if forecast:
+        ann  = forecast.get("annual_return", {})
+        yr3  = forecast.get("3_year", {})
+        yr5  = forecast.get("5_year", {})
+        imp  = ann.get("improvement_pct", 0)
+        imp_sign = f"+{imp}" if imp >= 0 else str(imp)
+        forecast_section = f"""
+─── Forecasted Return Comparison (per HKD 100 invested) ──
+                         Current Portfolio    New Portfolio    Difference
+  Annual return        : {ann.get('current_pct', 'N/A'):>8}%           {ann.get('new_pct', 'N/A'):>8}%       {imp_sign}%
+  3-Year cumulative    : {yr3.get('current_cumulative_pct', 'N/A'):>8}%           {yr3.get('new_cumulative_pct', 'N/A'):>8}%
+  3-Year value (HKD)   : {yr3.get('current_value_hkd', 'N/A'):>10}        {yr3.get('new_value_hkd', 'N/A'):>10}       +{yr3.get('gain_vs_current_hkd', 'N/A')}
+  5-Year cumulative    : {yr5.get('current_cumulative_pct', 'N/A'):>8}%           {yr5.get('new_cumulative_pct', 'N/A'):>8}%
+  5-Year value (HKD)   : {yr5.get('current_value_hkd', 'N/A'):>10}        {yr5.get('new_value_hkd', 'N/A'):>10}       +{yr5.get('gain_vs_current_hkd', 'N/A')}
+
+  * Forecast assumes constant annual return equal to trailing 1-year
+    performance. Actual returns will vary with market conditions.
+"""
+    else:
+        forecast_section = ""
+
     # Subject line changes when action is required
     subject_flag = " [ACTION REQUIRED]" if action_required else ""
 
@@ -544,7 +621,7 @@ Here is your weekly MPF portfolio review.
 {alert_lines}
 ─── Recommended Reallocation ──────────────────────────
 {alloc_lines}
-{rationale_section}
+{rationale_section}{forecast_section}
 This optimised allocation is designed to meet your {target_return:.1f}% target
 with minimum portfolio risk, maintaining bond exposure for downside protection
 and diversification across multiple asset classes.
@@ -751,12 +828,17 @@ When responding:
 - Clearly explain the reasoning in investor-friendly language.
 - Note: portfolio return figures are trailing 1-year, not calendar-year YTD.
 
-When calling build_weekly_email, you MUST populate optimization_rationale with
-an entry for every fund in recommended_allocation. Each entry must be 1-2 sentences
-in plain investor-friendly language explaining:
-  (a) why this fund was selected or given its specific weight,
-  (b) its role in the portfolio (e.g. growth engine, diversifier, downside protection),
-  (c) any relevant recent performance context from the fund data.
+When calling build_weekly_email, you MUST:
+1. Populate optimization_rationale with an entry for every fund in recommended_allocation.
+   Each entry must be 1-2 sentences in plain investor-friendly language explaining:
+   (a) why this fund was selected or given its specific weight,
+   (b) its role in the portfolio (e.g. growth engine, diversifier, downside protection),
+   (c) any relevant recent performance context from the fund data.
+
+2. Pass the forecast_comparison object directly from the optimize_allocation result
+   into the forecast_comparison field. Do not modify or summarise it — pass it as-is.
+   This contains the 3-year and 5-year projected cumulative returns and HKD future
+   values for both the current and new portfolio, so the investor can compare outcomes.
 """
 
     user_prompt = """
