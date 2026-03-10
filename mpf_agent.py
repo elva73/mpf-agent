@@ -614,7 +614,47 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
   {urgency_note}
 """
 
-    # Format allocation table
+    # ── Current portfolio table ──────────────────────────────────────────────
+    curr_table_rows = ""
+    for f in _PORTFOLIO:
+        name   = f["fund"]
+        alloc  = f["allocation_pct"]
+        ret1yr = f["return_1yr_pct"]
+        ac     = f.get("asset_class", "")
+        risk   = f.get("risk", "")
+        bar    = "█" * int(alloc / 2)   # 1 block ≈ 2%
+        curr_table_rows += f"  {name:<42} {alloc:>5.1f}%  {ret1yr:>+6.1f}%  {risk:<14}  {bar}\n"
+
+    current_portfolio_section = f"""
+─── Current Portfolio Holdings ────────────────────────
+  {'Fund':<42} {'Alloc':>6}  {'1yr Rtn':>7}  {'Risk':<14}  Chart (each █ ≈ 2%)
+  {'─'*42} {'─'*6}  {'─'*7}  {'─'*14}  {'─'*20}
+{curr_table_rows.rstrip()}
+
+─── Current Allocation — Round Chart ──────────────────
+"""
+    # ASCII donut chart — each fund gets a proportional arc of characters
+    # Total width = 60 chars representing 100%
+    CHART_WIDTH = 60
+    SYMBOLS = ["▓", "░", "▒", "■", "□", "▪", "▫", "◆"]
+    chart_bar  = ""
+    legend     = ""
+    for idx, f in enumerate(_PORTFOLIO):
+        sym    = SYMBOLS[idx % len(SYMBOLS)]
+        cells  = max(1, round(f["allocation_pct"] / 100 * CHART_WIDTH))
+        chart_bar += sym * cells
+        legend    += f"  {sym} {f['fund']:<42} {f['allocation_pct']:>5.1f}%\n"
+    # Trim/pad to exact width
+    chart_bar = chart_bar[:CHART_WIDTH].ljust(CHART_WIDTH)
+
+    current_portfolio_section += (
+        f"  ┌{'─' * CHART_WIDTH}┐\n"
+        f"  │{chart_bar}│\n"
+        f"  └{'─' * CHART_WIDTH}┘\n\n"
+        f"{legend.rstrip()}\n"
+    )
+
+    # Format new allocation table
     alloc_lines = "\n".join(
         f"  • {fund}: {pct}%" for fund, pct in recommended.items()
     )
@@ -662,7 +702,7 @@ Here is your weekly MPF portfolio review.
   Your target return   : {target_return:.1f}%
   vs Benchmark         : {portfolio_ytd - benchmark_ytd:+.1f}%
   vs Target            : {portfolio_ytd - target_return:+.1f}%
-{alert_lines}
+{alert_lines}{current_portfolio_section}
 ─── Recommended Reallocation ──────────────────────────
 {alloc_lines}
 {rationale_section}{forecast_section}
