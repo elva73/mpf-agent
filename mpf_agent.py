@@ -129,15 +129,17 @@ TOOLS = [
                     "type": "object",
                     "description": "Dict mapping fund name to allocation percent.",
                 },
-                "optimization_rationale": {
-                    "type": "object",
-                    "description": (
-                        "Dict mapping each fund name in recommended_allocation to a "
-                        "short investor-friendly explanation (1-2 sentences) of WHY "
-                        "that fund was included or weighted as it was — covering its "
-                        "role (growth, diversification, downside protection, etc.), "
-                        "recent performance context, and asset-class contribution."
-                    ),
+                "expected_annual_return_pct": {
+                    "type": "number",
+                    "description": "Expected annual return of the new optimised portfolio (%).",
+                },
+                "portfolio_volatility_pct": {
+                    "type": "number",
+                    "description": "Annualised volatility of the new optimised portfolio (%).",
+                },
+                "sharpe_ratio": {
+                    "type": "number",
+                    "description": "Sharpe ratio of the new optimised portfolio.",
                 },
                 "forecast_comparison": {
                     "type": "object",
@@ -156,6 +158,9 @@ TOOLS = [
                 "beats_benchmark",
                 "meets_target",
                 "recommended_allocation",
+                "expected_annual_return_pct",
+                "portfolio_volatility_pct",
+                "sharpe_ratio",
                 "forecast_comparison",
             ],
         },
@@ -500,52 +505,55 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     meets_target: bool = tool_input["meets_target"]
     recommended: dict = tool_input["recommended_allocation"]
     forecast: dict = tool_input.get("forecast_comparison", {})
+    new_return:  float = tool_input.get("expected_annual_return_pct", 0.0)
+    new_vol:     float = tool_input.get("portfolio_volatility_pct", 0.0)
+    new_sharpe:  float = tool_input.get("sharpe_ratio", 0.0)
 
-    # ── Auto-generate rationale from fund data for any missing entries ───────
-    # Claude may omit optimization_rationale or leave entries blank.
-    # This ensures every recommended fund always has a rationale in the email.
-    _fund_lookup     = {f["name"]: f for f in _FUND_UNIVERSE}
-    _portfolio_lookup = {f["fund"]: f for f in _PORTFOLIO}
+    # ── Portfolio-level Optimization Rationale (single paragraph) ────────────
+    # Summarises the overall new allocation: expected return, 3yr projection,
+    # Sharpe improvement, diversification breadth, and downside protection.
+    fc        = forecast.get("forecast_comparison", forecast)  # handle pass-through
+    yr3       = fc.get("3_year", forecast.get("3_year", {}))
+    curr_ret  = forecast.get("annual_return", {}).get("current_pct", 0.0)
+    improvement = round(new_return - curr_ret, 1)
+    imp_sign  = f"+{improvement}" if improvement >= 0 else str(improvement)
 
-    def _auto_rationale(fund_name: str, weight: float) -> str:
-        fu  = _fund_lookup.get(fund_name, {})
-        pf  = _portfolio_lookup.get(fund_name, {})
-        ret = pf.get("return_1yr_pct", fu.get("expected_return_pct", 0))
-        asset_class = fu.get("asset_class", "")
-        risk        = fu.get("risk", "")
-        is_bond     = fu.get("is_bond", False)
-        if is_bond:
-            return (
-                f"Allocated {weight}% as the portfolio's downside protection anchor. "
-                f"As the only bond fund, it lowers overall volatility and cushions "
-                f"drawdowns, with a 1-year return of {ret}%."
-            )
-        if ret >= 20:
-            return (
-                f"Allocated {weight}% as a primary growth engine — its 1-year return "
-                f"of {ret}% is among the highest available and is key to reaching the "
-                f"{_INVESTOR_TARGET_RETURN}% overall target. "
-                f"{asset_class} exposure broadens geographic diversification."
-            )
-        if ret >= 15:
-            return (
-                f"Allocated {weight}% for its strong {ret}% 1-year return and "
-                f"{risk.lower()} risk profile. {asset_class} exposure complements "
-                f"higher-risk positions while contributing to the "
-                f"{_INVESTOR_TARGET_RETURN}% target."
-            )
-        return (
-            f"Included at {weight}% to diversify across {asset_class}. "
-            f"Its 1-year return of {ret}% is moderate but it reduces concentration "
-            f"risk and satisfies the minimum 2% diversification floor."
-        )
-
-    # Merge: use Claude-supplied entries where present, auto-fill the rest
-    supplied_rationale: dict = tool_input.get("optimization_rationale", {})
-    rationale: dict = {
-        fund: (supplied_rationale.get(fund) or _auto_rationale(fund, weight))
-        for fund, weight in recommended.items()
+    # Count asset classes for diversification summary
+    _fund_lookup = {f["name"]: f for f in _FUND_UNIVERSE}
+    asset_classes = {
+        _fund_lookup[f]["asset_class"]
+        for f in recommended
+        if f in _fund_lookup
     }
+    bond_funds = [
+        f for f in recommended
+        if _fund_lookup.get(f, {}).get("is_bond", False)
+    ]
+    bond_pct = sum(recommended[f] for f in bond_funds)
+    n_funds   = len(recommended)
+    n_classes = len(asset_classes)
+
+    # Current Sharpe for comparison (approx: (curr_ret - rf) / curr_vol)
+    # We only show new Sharpe — current not available here, so describe direction
+    sharpe_note = (
+        f"a Sharpe ratio of {new_sharpe:.2f}"
+        if new_sharpe else "an improved risk-adjusted return profile"
+    )
+    vol_note = f"annualised volatility of {new_vol:.1f}%" if new_vol else "controlled volatility"
+
+    yr3_new = yr3.get("new_cumulative_pct", "")
+    yr3_str = f", projecting a cumulative return of ~{yr3_new}% over 3 years" if yr3_new else ""
+
+    rationale_paragraph = (
+        f"This rebalanced allocation targets an expected annual return of "
+        f"~{new_return:.1f}% ({imp_sign}% vs current {curr_ret:.1f}%){yr3_str}, "
+        f"pushing toward the {_INVESTOR_TARGET_RETURN}% overall portfolio target. "
+        f"The optimiser achieves {sharpe_note} at {vol_note}, "
+        f"distributing capital across {n_funds} funds and {n_classes} asset classes "
+        f"for superior diversification. "
+        f"Bond exposure of {bond_pct:.1f}% ({', '.join(bond_funds) if bond_funds else 'none'}) "
+        f"provides downside protection and cushions against equity market drawdowns."
+    )
 
     # ── Alert logic ─────────────────────────────────────────────────────────
     below_benchmark = not beats_benchmark          # portfolio < HSI
@@ -611,19 +619,11 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
         f"  • {fund}: {pct}%" for fund, pct in recommended.items()
     )
 
-    # Format optimization rationale — one bullet per fund that has an explanation
-    if rationale:
-        rationale_lines = "\n".join(
-            f"  • {fund}: {reason}"
-            for fund, reason in rationale.items()
-            if reason
-        )
-        rationale_section = (
-            f"\n─── Optimization Rationale ────────────────────────────\n"
-            f"{rationale_lines}\n"
-        )
-    else:
-        rationale_section = ""
+    # Format optimization rationale — single portfolio-level paragraph
+    rationale_section = (
+        f"\n─── Optimization Rationale ────────────────────────────\n"
+        f"  {rationale_paragraph}\n"
+    )
 
     # Format 3yr / 5yr forecasted return comparison table
     if forecast:
@@ -873,11 +873,8 @@ When responding:
 - Note: portfolio return figures are trailing 1-year, not calendar-year YTD.
 
 When calling build_weekly_email, you MUST:
-1. Populate optimization_rationale with an entry for every fund in recommended_allocation.
-   Each entry must be 1-2 sentences in plain investor-friendly language explaining:
-   (a) why this fund was selected or given its specific weight,
-   (b) its role in the portfolio (e.g. growth engine, diversifier, downside protection),
-   (c) any relevant recent performance context from the fund data.
+1. Pass expected_annual_return_pct, portfolio_volatility_pct, and sharpe_ratio
+   directly from the optimize_allocation result — do not modify these values.
 
 2. Pass the forecast_comparison object directly from the optimize_allocation result
    into the forecast_comparison field. Do not modify or summarise it — pass it as-is.
