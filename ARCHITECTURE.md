@@ -4,6 +4,8 @@
 
 ```
 New Project/
+├── data/
+│   └── funds.json        # Master fund data file (22 funds + metadata)
 ├── mpf_agent.py          # AI agent — all backend logic
 ├── test_email.py         # Local test: generates email preview without API
 ├── my-next-app/          # Next.js landing page
@@ -304,10 +306,10 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
 
 | Constant | Value | Purpose |
 |---|---|---|
-| `_INVESTOR_TARGET_RETURN` | `20.0` | Overall portfolio annual return target (%) |
-| `_BENCHMARK` | HSI 19,845.32 / YTD 5.6% | Performance benchmark |
-| `_PORTFOLIO` | 8 funds | Current holdings with allocation % and return history |
-| `_FUND_UNIVERSE` | 8 funds | Optimisation candidates (same 8 funds) |
+| `_INVESTOR_TARGET_RETURN` | `20.0` | Overall portfolio annual return target (%) — loaded from `data/funds.json` |
+| `_BENCHMARK` | HSI 19,845.32 / YTD 5.6% | Performance benchmark — loaded from `data/funds.json` |
+| `_PORTFOLIO` | 8 funds | Current holdings — loaded from `data/funds.json` (`in_portfolio=true`) |
+| `_FUND_UNIVERSE` | 22 funds | Full optimisation universe — loaded from `data/funds.json` (all funds) |
 | `_MAX_RETRIES` | `3` | API retry attempts on transient errors |
 | `_RETRY_BACKOFF_BASE` | `2.0s` | Base for exponential backoff (2^attempt seconds) |
 | Per-fund bounds | `(0.02, 0.40)` | 2%–40% weight range per fund |
@@ -315,6 +317,70 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
 | Risk-free rate | `4.0%` | HK approx., used for Sharpe ratio |
 | `CHART_WIDTH` | `60` | Total character width of the ASCII round chart |
 | `SYMBOLS` | `["▓","░","▒","■","□","▪","▫","◆"]` | 8 distinct block symbols for round chart |
+
+### `data/funds.json` — master fund data file
+
+All fund data is stored in `data/funds.json` and loaded at startup by `_load_fund_data()`.
+To update fund figures monthly, edit only this file — no Python code changes needed.
+
+**Top-level structure:**
+```json
+{
+  "metadata": {
+    "investor_target_return_pct": 20.0,
+    "benchmark": { "index": "...", "level": 19845.32, "ytd_return_pct": 5.6 }
+  },
+  "funds": [ { ...one object per fund... } ]
+}
+```
+
+**Per-fund fields:**
+
+| Field | Type | Notes |
+|---|---|---|
+| `code` | str | Short uppercase identifier (e.g. `"GROWTH"`, `"GL_BD"`) |
+| `name` | str | Full display name |
+| `asset_class` | str | Classification used for MVO correlation matrix |
+| `risk` | str | `"High"` / `"Medium"` / `"Low to Medium"` / `"Low"` / `"Medium to High"` |
+| `is_bond` | bool | `true` for bond/money-market funds (affects MVO correlation + bond floor) |
+| `in_portfolio` | bool | `true` for the 8 currently-held funds |
+| `allocation_pct` | float\|null | Current weight %; non-null only when `in_portfolio=true` |
+| `return_1m_pct` … `return_5yr_pct` | float\|null | Performance figures from fund sheet |
+| `return_since_launch_pct` | float\|null | Cumulative since inception |
+| `launch_date` | str | ISO 8601 date |
+| `return_since_restructuring_pct` | float\|null | Only for funds that were restructured |
+| `restructuring_date` | str\|null | ISO 8601 date; null if not applicable |
+
+**Derived fields (computed at load time, not stored):**
+- `annualised_return_pct` → `((1 + return_3yr_pct/100)^(1/3) - 1) * 100`, fallback to `return_1yr_pct`
+- `expected_return_pct` → equals `return_1yr_pct` (1yr trailing proxy for MVO)
+
+**Fund universe (22 funds total):**
+
+| Code | Fund | In Portfolio |
+|---|---|---|
+| `GROWTH` | Growth Fund | ✓ |
+| `GL_BD` | Global Bond Fund | ✓ |
+| `HK_CN_EQ` | Hong Kong and Chinese Equity Fund | ✓ |
+| `EU_EQ` | European Equity Fund | ✓ |
+| `CN_EQ` | Chinese Equity Fund | ✓ |
+| `NA_EQ` | North American Equity Fund | ✓ |
+| `HSI_IDX` | Hang Seng Index Tracking Fund | ✓ |
+| `AP_EQ` | Asia Pacific Equity Fund | ✓ |
+| `AGE65_DR` | Age 65 Plus Fund (with de-risking nature) | — |
+| `AGE65_NDR` | Age 65 Plus Fund (without de-risking nature) | — |
+| `BAL` | Balanced Fund | — |
+| `CORE_DR` | Core Accumulation Fund (with de-risking nature) | — |
+| `CORE_NDR` | Core Accumulation Fund (without de-risking nature) | — |
+| `GL_EQ` | Global Equity Fund | — |
+| `GUAR` | Guaranteed Fund | — |
+| `HSCEI_IDX` | Hang Seng China Enterprises Index Tracking Fund | — |
+| `MPF_CONS` | MPF Conservative Fund | — |
+| `STABLE` | Stable Fund | — |
+| `VC_AP_EQ` | ValueChoice Asia Pacific Equity Tracker Fund | — |
+| `VC_BAL` | ValueChoice Balanced Fund | — |
+| `VC_EU_EQ` | ValueChoice Europe Equity Tracker Fund | — |
+| `VC_NA_EQ` | ValueChoice North America Equity Tracker Fund | — |
 
 ### Annualised return formula
 

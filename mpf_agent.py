@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import pathlib
 import smtplib
 import time
 import schedule
@@ -169,128 +170,77 @@ TOOLS = [
 
 
 # ---------------------------------------------------------------------------
-# Real fund data (from investor's fund sheet)
+# Fund data — loaded from data/funds.json
 # ---------------------------------------------------------------------------
 
-# Full performance data available for the top 5 holdings (from fund sheet).
-# Funds 6–8 have allocation + 1yr return only.
-_PORTFOLIO = [
-    {
-        "fund": "Growth Fund",
-        "asset_class": "Mixed / Growth",
-        "risk": "High",
-        "allocation_pct": 18.01,
-        "return_1m_pct":   -1.33,
-        "return_3m_pct":    3.59,
-        "return_6m_pct":    8.00,
-        "return_1yr_pct":  21.23,
-        "return_3yr_pct":  42.64,   # cumulative
-        "return_5yr_pct":  27.11,   # cumulative
-        "return_since_launch_pct": 211.80,
-        "launch_date": "2000-12-01",
-        "annualised_return_pct": round(((1 + 42.64 / 100) ** (1 / 3) - 1) * 100, 2),
-    },
-    {
-        "fund": "Global Bond Fund",
-        "asset_class": "Bond – Global",
-        "risk": "Low to Medium",
-        "allocation_pct": 15.16,
-        "return_1m_pct":   0.11,
-        "return_3m_pct":   1.14,
-        "return_6m_pct":   1.06,
-        "return_1yr_pct":  5.01,
-        "return_3yr_pct":  8.18,
-        "return_5yr_pct": -10.22,
-        "return_since_launch_pct": 17.18,
-        "launch_date": "2009-10-08",
-        "annualised_return_pct": round(((1 + 8.18 / 100) ** (1 / 3) - 1) * 100, 2),
-    },
-    {
-        "fund": "Hong Kong and Chinese Equity Fund",
-        "asset_class": "Equity – HK/China",
-        "risk": "High",
-        "allocation_pct": 14.85,
-        "return_1m_pct":  -6.39,
-        "return_3m_pct":  -2.48,
-        "return_6m_pct":  -0.61,
-        "return_1yr_pct": 13.07,
-        "return_3yr_pct": 24.71,
-        "return_5yr_pct": -11.62,
-        "return_since_launch_pct": 168.76,
-        "launch_date": "2000-12-01",
-        "annualised_return_pct": round(((1 + 24.71 / 100) ** (1 / 3) - 1) * 100, 2),
-    },
-    {
-        "fund": "European Equity Fund",
-        "asset_class": "Equity – Europe",
-        "risk": "Medium",
-        "allocation_pct": 14.68,
-        "return_1m_pct":  -3.27,
-        "return_3m_pct":   2.70,
-        "return_6m_pct":   8.88,
-        "return_1yr_pct": 15.80,
-        "return_3yr_pct": 37.33,
-        "return_5yr_pct": 49.34,
-        "return_since_launch_pct": 113.41,
-        "launch_date": "2000-12-01",
-        "annualised_return_pct": round(((1 + 37.33 / 100) ** (1 / 3) - 1) * 100, 2),
-    },
-    {
-        "fund": "Chinese Equity Fund",
-        "asset_class": "Equity – China",
-        "risk": "High",
-        "allocation_pct": 11.84,
-        "return_1m_pct":  -5.65,
-        "return_3m_pct":  -3.81,
-        "return_6m_pct":  -2.26,
-        "return_1yr_pct": 10.29,
-        "return_3yr_pct": 17.25,
-        "return_5yr_pct": 27.88,
-        "return_since_launch_pct": 57.94,
-        "launch_date": "2009-10-08",
-        "annualised_return_pct": round(((1 + 17.25 / 100) ** (1 / 3) - 1) * 100, 2),
-    },
-    {
-        "fund": "North American Equity Fund",
-        "asset_class": "Equity – North America",
-        "risk": "Medium",
-        "allocation_pct": 10.89,
-        "return_1yr_pct": 17.85,
-        "annualised_return_pct": 17.85,  # only 1yr available
-    },
-    {
-        "fund": "Hang Seng Index Tracking Fund",
-        "asset_class": "Equity – HK (Index)",
-        "risk": "Medium",
-        "allocation_pct": 7.77,
-        "return_1yr_pct": 9.76,
-        "annualised_return_pct": 9.76,
-    },
-    {
-        "fund": "Asia Pacific Equity Fund",
-        "asset_class": "Equity – APAC",
-        "risk": "Medium",
-        "allocation_pct": 6.80,
-        "return_1yr_pct": 27.90,
-        "annualised_return_pct": 27.90,
-    },
-]
+def _load_fund_data():
+    """
+    Load fund performance data from data/funds.json (relative to this file).
+    Returns (_PORTFOLIO, _FUND_UNIVERSE, _BENCHMARK, _INVESTOR_TARGET_RETURN)
+    in the same shape as the original hardcoded constants so all downstream
+    code is unchanged.
 
-# Fund universe for optimisation — all 8 holdings are candidates.
-# expected_return_pct uses the 1-year return as forward-looking proxy.
-_FUND_UNIVERSE = [
-    {"code": "GROWTH",   "name": "Growth Fund",                        "asset_class": "Mixed / Growth",        "risk": "High",          "expected_return_pct": 21.23, "is_bond": False},
-    {"code": "GL_BD",    "name": "Global Bond Fund",                   "asset_class": "Bond – Global",         "risk": "Low to Medium", "expected_return_pct":  5.01, "is_bond": True},
-    {"code": "HK_CN_EQ", "name": "Hong Kong and Chinese Equity Fund",  "asset_class": "Equity – HK/China",     "risk": "High",          "expected_return_pct": 13.07, "is_bond": False},
-    {"code": "EU_EQ",    "name": "European Equity Fund",               "asset_class": "Equity – Europe",       "risk": "Medium",        "expected_return_pct": 15.80, "is_bond": False},
-    {"code": "CN_EQ",    "name": "Chinese Equity Fund",                "asset_class": "Equity – China",        "risk": "High",          "expected_return_pct": 10.29, "is_bond": False},
-    {"code": "NA_EQ",    "name": "North American Equity Fund",         "asset_class": "Equity – North America","risk": "Medium",        "expected_return_pct": 17.85, "is_bond": False},
-    {"code": "HSI_IDX",  "name": "Hang Seng Index Tracking Fund",      "asset_class": "Equity – HK (Index)",   "risk": "Medium",        "expected_return_pct":  9.76, "is_bond": False},
-    {"code": "AP_EQ",    "name": "Asia Pacific Equity Fund",           "asset_class": "Equity – APAC",         "risk": "Medium",        "expected_return_pct": 27.90, "is_bond": False},
-]
+    _PORTFOLIO  : 8 currently-held funds (in_portfolio=true), with full fields.
+    _FUND_UNIVERSE : all 22 funds — expanded universe for MVO optimisation.
+    annualised_return_pct is computed from return_3yr_pct (or falls back to
+    return_1yr_pct for funds with less than 3 years of history).
+    expected_return_pct is always set to return_1yr_pct (1yr trailing proxy).
+    """
+    _data_path = pathlib.Path(__file__).parent / "data" / "funds.json"
+    with open(_data_path, encoding="utf-8") as _fh:
+        _raw = json.load(_fh)
 
-_BENCHMARK = {"index": "Hang Seng Index", "level": 19_845.32, "ytd_return_pct": 5.6}
-_INVESTOR_TARGET_RETURN = 20.0  # percent per annum — overall portfolio target
+    meta = _raw.get("metadata", {})
+    benchmark = meta.get(
+        "benchmark",
+        {"index": "Hang Seng Index", "level": 19845.32, "ytd_return_pct": 5.6},
+    )
+    target = meta.get("investor_target_return_pct", 20.0)
+
+    portfolio, universe = [], []
+    for f in _raw["funds"]:
+        # ── Fund universe entry (all 22 funds are optimisation candidates) ──
+        universe.append({
+            "code":                f["code"],
+            "name":                f["name"],
+            "asset_class":         f["asset_class"],
+            "risk":                f["risk"],
+            "expected_return_pct": f["return_1yr_pct"],   # 1yr as forward proxy
+            "is_bond":             f["is_bond"],
+        })
+
+        # ── Portfolio entry (only currently-held funds) ──────────────────────
+        if f.get("in_portfolio"):
+            r3yr = f.get("return_3yr_pct")
+            annualised = (
+                round(((1 + r3yr / 100) ** (1 / 3) - 1) * 100, 2)
+                if r3yr is not None
+                else f["return_1yr_pct"]   # fallback for <3yr history
+            )
+            portfolio.append({
+                "fund":                    f["name"],
+                "asset_class":             f["asset_class"],
+                "risk":                    f["risk"],
+                "allocation_pct":          f["allocation_pct"],
+                "return_1m_pct":           f.get("return_1m_pct"),
+                "return_3m_pct":           f.get("return_3m_pct"),
+                "return_6m_pct":           f.get("return_6m_pct"),
+                "return_1yr_pct":          f["return_1yr_pct"],
+                "return_3yr_pct":          r3yr,
+                "return_5yr_pct":          f.get("return_5yr_pct"),
+                "return_since_launch_pct": f.get("return_since_launch_pct"),
+                "launch_date":             f.get("launch_date"),
+                "annualised_return_pct":   annualised,
+            })
+
+    return portfolio, universe, benchmark, target
+
+
+_PORTFOLIO, _FUND_UNIVERSE, _BENCHMARK, _INVESTOR_TARGET_RETURN = _load_fund_data()
+# _PORTFOLIO        : 8 currently-held funds
+# _FUND_UNIVERSE    : 22 funds (full available universe for optimisation)
+# _BENCHMARK        : HSI level + YTD return
+# _INVESTOR_TARGET_RETURN : annual return target (%)
 
 
 # ---------------------------------------------------------------------------
@@ -794,21 +744,24 @@ def send_fund_update_request() -> None:
 
 This is your monthly MPF fund data update reminder for {month_label}.
 
-Please update the fund performance figures in mpf_agent.py (_PORTFOLIO and
-_FUND_UNIVERSE) with the latest data from your MPF provider's fund sheet.
+Please update the fund performance figures in data/funds.json with the
+latest data from your MPF provider's fund sheet.
 
-Fields to update for each fund:
-  • allocation_pct    — current fund weight (%)
+Fields to update for each fund (where in_portfolio=true, also update allocation_pct):
   • return_1m_pct    — 1-month return (%)
   • return_3m_pct    — 3-month return (%)
   • return_6m_pct    — 6-month return (%)
   • return_1yr_pct   — 1-year return (%)
   • return_3yr_pct   — 3-year cumulative return (%)
-  • annualised_return_pct — update accordingly
+  • return_5yr_pct   — 5-year cumulative return (%)
+  • allocation_pct   — current fund weight (%) for held funds
 
-Also update:
-  • _BENCHMARK ytd_return_pct  — latest HSI YTD return (%)
-  • _INVESTOR_TARGET_RETURN    — if your target has changed
+Also update in data/funds.json under "metadata":
+  • benchmark.ytd_return_pct   — latest HSI YTD return (%)
+  • investor_target_return_pct — if your target has changed
+
+Note: annualised_return_pct is derived automatically from return_3yr_pct —
+no need to update it manually.
 
 After updating, run:
   python mpf_agent.py --monthly
