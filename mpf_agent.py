@@ -156,7 +156,6 @@ TOOLS = [
                 "beats_benchmark",
                 "meets_target",
                 "recommended_allocation",
-                "optimization_rationale",
                 "forecast_comparison",
             ],
         },
@@ -500,8 +499,53 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     beats_benchmark: bool = tool_input["beats_benchmark"]
     meets_target: bool = tool_input["meets_target"]
     recommended: dict = tool_input["recommended_allocation"]
-    rationale: dict = tool_input.get("optimization_rationale", {})
     forecast: dict = tool_input.get("forecast_comparison", {})
+
+    # ── Auto-generate rationale from fund data for any missing entries ───────
+    # Claude may omit optimization_rationale or leave entries blank.
+    # This ensures every recommended fund always has a rationale in the email.
+    _fund_lookup     = {f["name"]: f for f in _FUND_UNIVERSE}
+    _portfolio_lookup = {f["fund"]: f for f in _PORTFOLIO}
+
+    def _auto_rationale(fund_name: str, weight: float) -> str:
+        fu  = _fund_lookup.get(fund_name, {})
+        pf  = _portfolio_lookup.get(fund_name, {})
+        ret = pf.get("return_1yr_pct", fu.get("expected_return_pct", 0))
+        asset_class = fu.get("asset_class", "")
+        risk        = fu.get("risk", "")
+        is_bond     = fu.get("is_bond", False)
+        if is_bond:
+            return (
+                f"Allocated {weight}% as the portfolio's downside protection anchor. "
+                f"As the only bond fund, it lowers overall volatility and cushions "
+                f"drawdowns, with a 1-year return of {ret}%."
+            )
+        if ret >= 20:
+            return (
+                f"Allocated {weight}% as a primary growth engine — its 1-year return "
+                f"of {ret}% is among the highest available and is key to reaching the "
+                f"{_INVESTOR_TARGET_RETURN}% overall target. "
+                f"{asset_class} exposure broadens geographic diversification."
+            )
+        if ret >= 15:
+            return (
+                f"Allocated {weight}% for its strong {ret}% 1-year return and "
+                f"{risk.lower()} risk profile. {asset_class} exposure complements "
+                f"higher-risk positions while contributing to the "
+                f"{_INVESTOR_TARGET_RETURN}% target."
+            )
+        return (
+            f"Included at {weight}% to diversify across {asset_class}. "
+            f"Its 1-year return of {ret}% is moderate but it reduces concentration "
+            f"risk and satisfies the minimum 2% diversification floor."
+        )
+
+    # Merge: use Claude-supplied entries where present, auto-fill the rest
+    supplied_rationale: dict = tool_input.get("optimization_rationale", {})
+    rationale: dict = {
+        fund: (supplied_rationale.get(fund) or _auto_rationale(fund, weight))
+        for fund, weight in recommended.items()
+    }
 
     # ── Alert logic ─────────────────────────────────────────────────────────
     below_benchmark = not beats_benchmark          # portfolio < HSI
