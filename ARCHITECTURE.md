@@ -5,14 +5,15 @@
 ```
 New Project/
 ├── mpf_agent.py          # AI agent — all backend logic
+├── test_email.py         # Local test: generates email preview without API
 ├── my-next-app/          # Next.js landing page
 │   ├── app/
-│   │   ├── layout.tsx             # Root layout (Header + Footer wrapper)
-│   │   ├── page.tsx               # Home page
+│   │   ├── layout.tsx             # Root layout (arrow fn, Header + Footer)
+│   │   ├── page.tsx               # Home page (arrow fn)
 │   │   ├── globals.css            # Global Tailwind styles
 │   │   └── components/
-│   │       ├── Header.tsx         # Site header with CTA button
-│   │       └── Footer.tsx         # Site footer with CTA button
+│   │       ├── Header.tsx         # Nav bar + "가입하기" CTA button
+│   │       └── Footer.tsx         # Footer + "문의하기" CTA button
 │   ├── public/                    # Static assets (SVGs)
 │   ├── next.config.ts
 │   ├── tailwind.config (via postcss)
@@ -69,12 +70,17 @@ get_portfolio_  get_fund_universe   get_benchmark_state
        └────────────┬──────────────────────┐
                     ▼                      ▼
         optimize_allocation()     build_weekly_email()
-        (Markowitz MVO,           ├─ alert logic
+        (Markowitz MVO,           ├─ alert logic (4 severity levels)
          SLSQP solver,            ├─ allocation table
-         forecast calc)           ├─ optimization rationale
-                    │             ├─ 3yr/5yr forecast table
-                    │             └─ next steps
-                    └──────────────────────┘
+         forecast calc)           ├─ optimization rationale paragraph
+                    │             │    (auto-generated from fund data)
+                    │             ├─ 3yr/5yr forecast comparison table
+                    └────────────►└─ next steps
+                    passes:
+                    expected_annual_return_pct,
+                    portfolio_volatility_pct,
+                    sharpe_ratio,
+                    forecast_comparison
                                            │
                                            ▼
                                     send_email()  ← SMTP
@@ -82,15 +88,36 @@ get_portfolio_  get_fund_universe   get_benchmark_state
 
 ### Agent loop
 
-The agent runs a standard tool-use loop:
-
 1. Send `user_prompt` to Claude with the `TOOLS` schema
 2. Claude responds with `tool_use` blocks
 3. Each tool call is dispatched to the corresponding Python function via `dispatch_tool()`
 4. Results are fed back as `tool_result` blocks
 5. Loop continues until `stop_reason != "tool_use"`
 6. On completion, if `send_result=True` and `build_weekly_email` was called, the formatted email is sent via SMTP
-7. Email result is captured locally in `run_agent` (no global state) via `json.loads` on the tool response
+7. Email result is captured **locally** in `run_agent` via `json.loads` — no global state
+
+### Test script (`test_email.py`)
+
+Bypasses the Claude API entirely for local testing:
+
+```
+test_email.py
+    │
+    ├─► tool_optimize_allocation()   # runs MVO directly
+    │       └─► opt_result (allocation, sharpe, vol, forecast)
+    │
+    └─► tool_build_weekly_email()    # renders email directly
+            ├─ portfolio_ytd      ← from opt_result
+            ├─ benchmark_ytd      ← from _BENCHMARK
+            ├─ target_return      ← from _INVESTOR_TARGET_RETURN
+            ├─ beats_benchmark    ← computed locally
+            ├─ meets_target       ← computed locally
+            ├─ recommended_allocation   ← from opt_result
+            ├─ expected_annual_return_pct ← from opt_result
+            ├─ portfolio_volatility_pct   ← from opt_result
+            ├─ sharpe_ratio               ← from opt_result
+            └─ forecast_comparison        ← from opt_result
+```
 
 ### Data flow
 
@@ -115,60 +142,97 @@ _FUND_UNIVERSE (8 funds, static)
             ├─► covariance matrix
             ├─► SLSQP minimise variance subject to:
             │       • weights sum to 1
-            │       • weighted return ≥ 20% (overall target)
+            │       • weighted return ≥ 20% (overall portfolio target)
             │       • bond allocation ≥ 5%
             │       • 2% ≤ each weight ≤ 40%
-            └─► forecast_comparison (compound growth)
-                    ├─► 3yr: cumulative %, HKD value (current vs new)
-                    └─► 5yr: cumulative %, HKD value (current vs new)
-                            formula: ((1 + r/100)^n - 1) * 100
-                            base: HKD 100 invested today
+            │
+            └─► output: allocation, expected_return, volatility,
+                        sharpe_ratio, forecast_comparison
+                    │
+                    ▼
+                forecast_comparison:
+                    annual_return: { current_pct, new_pct, improvement_pct }
+                    3_year: { current_cumulative_pct, new_cumulative_pct,
+                              current_value_hkd, new_value_hkd,
+                              gain_vs_current_hkd }
+                    5_year: { same structure as 3_year }
+                    formula: ((1 + r/100)^n - 1) * 100
+                    base: HKD 100 invested today
 ```
 
 ### Tool schemas (`TOOLS`)
 
-| Tool | Input | Output |
+| Tool | Required inputs | Output |
 |---|---|---|
-| `get_portfolio_state` | *(none)* | Holdings, weighted 1yr return, investor target |
-| `get_fund_universe` | *(none)* | All 8 fund codes, asset class, expected return, risk |
+| `get_portfolio_state` | *(none)* | Holdings, weighted 1yr return, investor target, note |
+| `get_fund_universe` | *(none)* | 8 fund codes, asset class, expected return, risk, is_bond |
 | `get_benchmark_state` | *(none)* | HSI level and YTD return |
-| `optimize_allocation` | `target_return`, `fund_codes?` | Optimal weights, Sharpe ratio, `forecast_comparison` |
-| `build_weekly_email` | `portfolio_ytd`, `benchmark_ytd`, `target_return`, `beats_benchmark`, `meets_target`, `recommended_allocation`, `optimization_rationale`, `forecast_comparison` | Formatted email string + alert metadata |
+| `optimize_allocation` | `target_return`, `fund_codes?` | Allocation %, expected return, volatility, Sharpe, `forecast_comparison` |
+| `build_weekly_email` | `portfolio_ytd`, `benchmark_ytd`, `target_return`, `beats_benchmark`, `meets_target`, `recommended_allocation`, `expected_annual_return_pct`, `portfolio_volatility_pct`, `sharpe_ratio`, `forecast_comparison` | Formatted email string + alert metadata |
 
-### `build_weekly_email` output structure
+### `build_weekly_email` — Optimization Rationale generation
 
-The weekly email contains these sections in order:
+The rationale paragraph is **auto-generated in Python** from `_FUND_UNIVERSE` and `_PORTFOLIO` data — it does not rely on Claude to write it. This guarantees it always appears in the email.
+
+```python
+# Inputs used to build the paragraph:
+new_return       → expected_annual_return_pct   (from optimize_allocation)
+curr_ret         → annual_return.current_pct    (from forecast_comparison)
+improvement      → new_return - curr_ret
+yr3_new          → 3_year.new_cumulative_pct    (from forecast_comparison)
+new_sharpe       → sharpe_ratio                 (from optimize_allocation)
+new_vol          → portfolio_volatility_pct     (from optimize_allocation)
+n_funds          → len(recommended_allocation)
+n_classes        → count of unique asset classes in recommended funds
+bond_funds       → funds where is_bond=True
+bond_pct         → sum of weights for bond funds
+```
+
+Example output:
+```
+This rebalanced allocation targets an expected annual return of ~20.0%
+(+5.3% vs current 14.7%), projecting a cumulative return of ~72.8% over
+3 years, pushing toward the 20.0% overall portfolio target. The optimiser
+achieves a Sharpe ratio of 1.78 at annualised volatility of 9.0%,
+distributing capital across 8 funds and 8 asset classes for superior
+diversification. Bond exposure of 9.7% (Global Bond Fund) provides
+downside protection and cushions against equity market drawdowns.
+```
+
+### `build_weekly_email` — full email structure
 
 ```
 Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
 
 1. Performance Summary
-   portfolio_ytd vs benchmark_ytd vs target_return
-   +/- difference columns
+   portfolio return / HSI YTD / target / vs benchmark / vs target
 
-2. Alert Banner (severity based on conditions)
-   ✅ On Track          — beats benchmark AND meets target
-   ⚠️  Benchmark Alert  — below HSI only
-   ⚠️  Target Alert     — below 20% target only
-   🚨 URGENT            — below both
+2. Alert Banner
+   ✅  On Track              — beats benchmark AND meets 20% target
+   ⚠️  Benchmark Alert       — portfolio < HSI only
+   ⚠️  Target Return Not Met — portfolio < 20% target only
+   🚨  URGENT                — portfolio below both benchmark and target
 
 3. Recommended Reallocation
-   • Fund Name: XX.X%  (per fund, 2%–40% bounds)
+   • Fund Name: XX.X%    (per fund, 2%–40% bounds, ≥5% bond)
 
-4. Optimization Rationale
-   • Fund Name: [1-2 sentence explanation]
-     covering: role, weight rationale, performance context
+4. Optimization Rationale  ← auto-generated Python paragraph
+   "This rebalanced allocation targets an expected annual return of
+    ~XX.X% (+X.X% vs current XX.X%), projecting ~XX.X% over 3 years..."
 
 5. Forecasted Return Comparison (per HKD 100 invested)
-                    Current Portfolio   New Portfolio   Difference
-   Annual return  :     XX.X%              XX.X%         +X.X%
-   3-Year cumul.  :     XX.X%              XX.X%
-   3-Year value   :     HKD XXX.XX         HKD XXX.XX    +XX.XX
-   5-Year cumul.  :     XX.X%              XX.X%
-   5-Year value   :     HKD XXX.XX         HKD XXX.XX    +XX.XX
+                       Current Portfolio   New Portfolio   Difference
+   Annual return     :     XX.X%              XX.X%         +X.X%
+   3-Year cumulative :     XX.X%              XX.X%
+   3-Year value (HKD):     XXX.XX             XXX.XX        +XX.XX
+   5-Year cumulative :     XX.X%              XX.X%
+   5-Year value (HKD):     XXX.XX             XXX.XX        +XX.XX
 
 6. Next Steps
-   Instructions to submit switch via MPF trustee portal
+   1. Review reallocation [PROMPTLY if action required]
+   2. Log in to MPF trustee portal to submit switch
+   3. Allow 3–5 business days for switch to take effect
+   4. Next weekly update will confirm new allocation performance
 ```
 
 ### Key constants
@@ -178,34 +242,34 @@ Subject: Weekly MPF Portfolio Update [ACTION REQUIRED]?
 | `_INVESTOR_TARGET_RETURN` | `20.0` | Overall portfolio annual return target (%) |
 | `_BENCHMARK` | HSI 19,845.32 / YTD 5.6% | Performance benchmark |
 | `_PORTFOLIO` | 8 funds | Current holdings with allocation % and return history |
-| `_FUND_UNIVERSE` | 8 funds | Same funds as optimisation candidates |
+| `_FUND_UNIVERSE` | 8 funds | Optimisation candidates (same 8 funds) |
 | `_MAX_RETRIES` | `3` | API retry attempts on transient errors |
-| `_RETRY_BACKOFF_BASE` | `2.0s` | Base for exponential backoff (doubles each retry) |
-| Per-fund bounds | `(0.02, 0.40)` | 2%–40% weight range per fund in optimised allocation |
+| `_RETRY_BACKOFF_BASE` | `2.0s` | Base for exponential backoff (2^attempt seconds) |
+| Per-fund bounds | `(0.02, 0.40)` | 2%–40% weight range per fund |
 | Bond floor | `0.05` | Minimum 5% in bond fund(s) |
 | Risk-free rate | `4.0%` | HK approx., used for Sharpe ratio |
 
 ### Annualised return formula
 
-3-year cumulative returns are converted to annualised figures using the compound formula:
+3-year cumulative returns are converted to annualised figures:
 
 ```
 annualised = ((1 + cumulative/100)^(1/years) - 1) * 100
 ```
 
-Applied to 5 of the 8 funds that have 3yr history. The remaining 3 use 1yr return directly.
+Applied to 5 of the 8 funds that have 3yr history. The remaining 3 (North American Equity, HSI Tracking, Asia Pacific Equity) use 1yr return directly as only 1yr data is available.
 
 ### API resilience (`_call_api_with_retry`)
 
 ```
 Retry conditions:
-  APIConnectionError  → always retry (up to 3x)
-  APITimeoutError     → always retry (up to 3x)
-  APIStatusError 429  → rate limited, retry with backoff
-  APIStatusError 529  → overloaded, retry with backoff
-  Other APIStatusError → raise immediately
+  APIConnectionError   → always retry (network issue)
+  APITimeoutError      → always retry (timeout)
+  APIStatusError 429   → rate limited, retry with backoff
+  APIStatusError 529   → API overloaded, retry with backoff
+  Other APIStatusError → raise immediately (auth error, bad request, etc.)
 
-Backoff: 2^attempt seconds (1s, 2s, 4s)
+Backoff schedule: 2^attempt seconds → 1s, 2s, 4s
 Max attempts: 3
 ```
 
@@ -225,15 +289,21 @@ Max attempts: 3
 ### Component tree
 
 ```
-RootLayout (layout.tsx)       ← arrow function, export default
-├── <Header />                ← nav bar + "가입하기" CTA button
-├── <main>
-│   └── <Home />              ← page.tsx, arrow function, export default
-└── <Footer />                ← footer + "문의하기" CTA button
+RootLayout (layout.tsx)       ← const arrow fn, export default
+├── <Header />                ← const arrow fn, "가입하기" CTA button
+├── <main className="flex-1">
+│   └── <Home />              ← const arrow fn (page.tsx), export default
+└── <Footer />                ← const arrow fn, "문의하기" CTA button
 ```
 
 ### Conventions (from CLAUDE.md)
 
-- All React components **must** be arrow functions: `const Foo = () => { ... }`
+- All React components **must** be arrow functions:
+  ```tsx
+  const Foo = () => { ... };
+  export default Foo;
+  ```
 - All major CTA buttons **must** use these exact Tailwind classes:
-  `bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md shadow-md`
+  ```
+  bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2 px-4 rounded-md shadow-md
+  ```
