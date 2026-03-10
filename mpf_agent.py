@@ -129,6 +129,16 @@ TOOLS = [
                     "type": "object",
                     "description": "Dict mapping fund name to allocation percent.",
                 },
+                "optimization_rationale": {
+                    "type": "object",
+                    "description": (
+                        "Dict mapping each fund name in recommended_allocation to a "
+                        "short investor-friendly explanation (1-2 sentences) of WHY "
+                        "that fund was included or weighted as it was — covering its "
+                        "role (growth, diversification, downside protection, etc.), "
+                        "recent performance context, and asset-class contribution."
+                    ),
+                },
             },
             "required": [
                 "portfolio_ytd",
@@ -137,6 +147,7 @@ TOOLS = [
                 "beats_benchmark",
                 "meets_target",
                 "recommended_allocation",
+                "optimization_rationale",
             ],
         },
     },
@@ -435,6 +446,7 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
     beats_benchmark: bool = tool_input["beats_benchmark"]
     meets_target: bool = tool_input["meets_target"]
     recommended: dict = tool_input["recommended_allocation"]
+    rationale: dict = tool_input.get("optimization_rationale", {})
 
     # ── Alert logic ─────────────────────────────────────────────────────────
     below_benchmark = not beats_benchmark          # portfolio < HSI
@@ -500,6 +512,20 @@ def tool_build_weekly_email(tool_input: dict) -> str:  # noqa: C901
         f"  • {fund}: {pct}%" for fund, pct in recommended.items()
     )
 
+    # Format optimization rationale — one bullet per fund that has an explanation
+    if rationale:
+        rationale_lines = "\n".join(
+            f"  • {fund}: {reason}"
+            for fund, reason in rationale.items()
+            if reason
+        )
+        rationale_section = (
+            f"\n─── Optimization Rationale ────────────────────────────\n"
+            f"{rationale_lines}\n"
+        )
+    else:
+        rationale_section = ""
+
     # Subject line changes when action is required
     subject_flag = " [ACTION REQUIRED]" if action_required else ""
 
@@ -518,7 +544,7 @@ Here is your weekly MPF portfolio review.
 {alert_lines}
 ─── Recommended Reallocation ──────────────────────────
 {alloc_lines}
-
+{rationale_section}
 This optimised allocation is designed to meet your {target_return:.1f}% target
 with minimum portfolio risk, maintaining bond exposure for downside protection
 and diversification across multiple asset classes.
@@ -724,6 +750,13 @@ When responding:
 - If needed, recommend an improved allocation.
 - Clearly explain the reasoning in investor-friendly language.
 - Note: portfolio return figures are trailing 1-year, not calendar-year YTD.
+
+When calling build_weekly_email, you MUST populate optimization_rationale with
+an entry for every fund in recommended_allocation. Each entry must be 1-2 sentences
+in plain investor-friendly language explaining:
+  (a) why this fund was selected or given its specific weight,
+  (b) its role in the portfolio (e.g. growth engine, diversifier, downside protection),
+  (c) any relevant recent performance context from the fund data.
 """
 
     user_prompt = """
